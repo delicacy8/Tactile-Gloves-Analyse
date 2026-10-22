@@ -1,0 +1,96 @@
+千觉触觉手套：轨迹采集脚本
+========================
+
+1. 在原来的 record.py 能运行的 Python 环境中使用。
+   脚本需要 Python 3.9+ 和官方 xenseglovesdk，不需要 numpy、matplotlib 或其他第三方包。
+   官方目前列出的 SDK wheel 平台是 Windows x64、Linux x64/ARM64。
+   本脚本没有验证 macOS SDK 支持，请不要因脚本是 .py 就假定 SDK 支持所有系统。
+   安装 SDK 请使用厂家提供、匹配系统的 wheel：
+       python -m pip install "实际安装包路径.whl"
+   验证：
+       python -c "import xenseglovesdk; print(xenseglovesdk.__version__)"
+
+2. 连接 USB 手套，关闭其他正在读手套的程序（包括原 record.py 和厂家 GUI）。
+   在终端/Anaconda Prompt/IDE 集成终端，进入脚本所在文件夹后运行：
+       python xense_glove_recorder.py
+
+3. 按屏幕提示：
+   - 如发现多只手套，选择本次要采集的那只；一次只采一只。
+   - 戴好手套，手自然张开、不要接触物体，按回车执行去皮。
+   - 保持无负载，观察打印的读数；预览3秒只是观察窗口，不保证去皮已完成。
+   - 确认读数稳定后，再按回车。倒计时3秒后看到“正在录制”即可开始运动。
+   - 建议开始与结束各保留一小段静止无接触状态，以便分析基线。
+   - 结束时，在终端按一次回车；q 回车或 Ctrl+C 也可停止。
+   - 等待“可发回分析的文件”出现，说明写入、摘要与压缩已完成。
+   - 不要用关闭窗口或IDE强制停止按钮结束，否则可能来不及排空队列和压缩。
+
+   戴着手套按键会产生接触信号，建议由另一只手或助手结束。
+   每次采集创建新的目录，不覆盖以前的数据。
+   建议在独立终端进程运行，避免 Notebook/IDE 的标准输入与后台输入线程冲突。
+
+4. 可选用法：
+   设置任务标签：
+       python xense_glove_recorder.py --label "轻力夹取_纸筒_01"
+   设置120Hz（只是请求值，实际频率看summary）：
+       python xense_glove_recorder.py --hz 120
+   手动指定端口：
+       python xense_glove_recorder.py --port COM5
+   开始后60秒自动结束（仍需按提示校准、回车开始）：
+       python xense_glove_recorder.py --duration 60
+   使用未滤波模式（不执行去皮）：
+       python xense_glove_recorder.py --mode raw
+   跳过去皮、使用已有去皮结果：
+       python xense_glove_recorder.py --skip-tare
+   自定义保存目录：
+       python xense_glove_recorder.py --out "D:/glove_data"
+
+   默认USB、60Hz、tare_adc。设备会保存帧率设置；脚本结束后不会恢复原帧率。
+   raw、adc、tare_adc应在不同试次采集，不要把不同模式直接混在一起比较。
+   raw没有去皮，其基线不应以接近零作为开始条件，应观察是否稳定。
+
+5. 录制过程中输入文字并回车，会保存事件备注，如“开始提起”“发生滑移”。
+   这会记录输入确认时刻，不是精确物理事件时刻。
+   events.jsonl的last_enqueued_frame_index只表示处理备注时最近入队的帧，
+   精确关联请使用elapsed_s；人工备注不能代替高速视频真值。
+
+6. 保存位置默认在脚本旁边：
+   recorded_trajectories/日期_时间_随机编号/
+       frames.jsonl    每行一帧，保留原SDK字段、null、模式及随帧gyro。
+       events.jsonl    开始、停止和人工备注。
+       metadata.json   设备/SDK版本、设置、任务标签、结束原因及异常。
+       summary.json    保存帧数、真实保存间隔、序号缺口及数据质控。
+   同级的 日期_时间_随机编号.zip 是打包后的同一份数据，直接发回这个ZIP即可。
+   没有视频也可以先分析，但不能仅凭热图宣称真实滑移、力精度或操作成功。
+   如果另录视频，请一并发来；本脚本不录视频、不建立摄像机硬件同步。
+   可在开头做可见的轻触动作辅助事后对齐，精度仍受视频与触觉采样间隔限制。
+
+7. 数据字段：
+   values            长度2457，按行展开；reshape为63×39，null必须保留为无效位置。
+   timestamp         SDK收到并解析帧的主机Unix时间（秒）。
+   timestamp_ms      设备时钟（毫秒）；可能回绕或重启。
+   sequence          设备16位帧序号；可能回绕或重启。
+   _capture.elapsed_s 相对本次录制开始的主机单调时钟（秒），采集读取时刻。
+   _capture.frame_index 从0开始的保存索引。
+   gyro              仅为压力帧附带样本；不是完整独立IMU流。
+   ADC不是牛顿。脚本不把缺失位置补零，不对原信号做平滑/插值/归一化。
+
+8. 质量与异常：
+   SDK只保留最新压力帧，脚本通过后台写盘降低应用漏采，但不能保证零丢帧。
+   重复读取同一帧会被去重，duplicate_poll_reads很大本身不表示采集失败。
+   summary中missing_sequence_estimate表示保存序号中的缺口估计，不能直接归因于硬件。
+   3秒没有新帧会自动结束并保存已采到的数据，可用--stale-seconds修改。
+   USB断开、写入错误、队列满都会记录异常；先检查metadata.status与error。
+   磁盘写入约每秒flush一次（不是断电持久化保证），异常断电可能损失队列与缓存。
+   出现异常也保留原始目录，勿删除；若summary/ZIP未完成可直接压缩整个目录发回。
+   若实际帧率明显低于请求值，先关闭无关绘图/打印程序，检查USB与磁盘，再降低请求频率。
+   如果没有新帧，请检查输出通道、模式、驱动、串口占用与设备连接，不要重复强制去皮。
+
+9. 不连接手套的演示：
+       python xense_glove_recorder.py --demo --duration 3
+   仅生成带SYNTHETIC_DEMO标记的合成数据，用于检查文件生成与压缩流程。
+   演示通过不表示真机SDK、手套采样或帧率已经验证。
+
+官方接口依据：
+https://docs.xenserobotics.com/docs/latest/sdk/xenseglovesdk/quickstart
+https://docs.xenserobotics.com/docs/latest/sdk/xenseglovesdk/api
+https://docs.xenserobotics.com/docs/latest/sdk/xenseglovesdk/data
